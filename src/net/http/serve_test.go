@@ -23,6 +23,7 @@ import (
 	"net"
 	. "net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/http/httputil"
 	"net/http/internal"
 	"net/url"
@@ -960,11 +961,40 @@ func TestServerAllowsBlockingRemoteAddr(t *testing.T) {
 	ts.Start()
 	defer ts.Close()
 
+	logf := func(format string, args ...interface{}) {
+		t.Logf(format, args...)
+	}
+	trace := &httptrace.ClientTrace{
+		GetConn: func(hostPort string) { logf("Getting conn for %v ...", hostPort) },
+		GotConn: func(ci httptrace.GotConnInfo) {
+			logf("got conn: %+v", ci)
+		},
+		GotFirstResponseByte: func() { logf("first response byte") },
+		PutIdleConn:          func(err error) { logf("PutIdleConn = %v", err) },
+		ConnectStart:         func(network, addr string) { logf("ConnectStart: Connecting to %s %s ...", network, addr) },
+		ConnectDone: func(network, addr string, err error) {
+			if err != nil {
+				t.Errorf("ConnectDone: %v", err)
+			}
+			logf("ConnectDone: connected to %s %s = %v", network, addr, err)
+		},
+		WroteRequest: func(e httptrace.WroteRequestInfo) {
+			logf("WroteRequest: %+v", e)
+		},
+	}
+
 	c := ts.Client()
 	c.Timeout = time.Second
 
 	fetch := func(num int, response chan<- string) {
-		resp, err := c.Get(ts.URL)
+		req, err := NewRequest("GET", ts.URL, nil)
+		if err != nil {
+			t.Errorf("bad req")
+			response <- ""
+			return
+		}
+		req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
+		resp, err := c.Do(req)
 		if err != nil {
 			t.Errorf("Request %d: %v", num, err)
 			response <- ""
